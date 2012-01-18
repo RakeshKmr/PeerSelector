@@ -22,7 +22,14 @@ struct ipAddress_s
     double score;
 };
 
+struct rtt_s
+{ 
+    char* ipAddress;
+    double rtt;
+};
+
 typedef ipAddress_s* ipAddress_s_ptr;
+typedef rtt_s* rtt_s_ptr;
 
 class Geo
 {
@@ -219,15 +226,15 @@ int calculateScore(char* peerIp)
     getCoordinates(peerIp, peerLatitude, peerLongitude);
     getCoordinates(m_myIp, myLatitude, myLongitude);
             
-    if (peerLatitude<=0 && peerLongitude <=0)
+    if (peerLatitude<=0 || peerLongitude <=0)
     {
-         cout<< "Invalid IP address -> " <<peerIp<< endl;
+         cout<< "Invalid Peer IP address -> " <<peerIp<< endl;
          return totalScore;
     }
     
-    if (myLatitude<=0 && myLongitude <=0)
+    if (myLatitude<=0 || myLongitude <=0)
     {
-         cout<< "Invalid IP address -> " <<m_myIp<< endl;
+         cout<< "Invalid Own IP address -> " <<m_myIp<< endl;
          return totalScore;
     }
     double distance = calculateDistance(peerLatitude, peerLongitude, myLatitude, myLongitude);
@@ -313,13 +320,57 @@ void sortIP(ipAddress_s ipAddressList[], int length)
      return;
 }
 
+
+void sortRTT(rtt_s rttList[], int length)
+{
+     rtt_s temp;
+
+     for(int i = 1; i < length - 1; i++)
+     {
+          for (int j = i + 1; j < length; j++)
+          {
+               if (rttList[i].rtt > rttList[j].rtt)  //comparing rtt
+               {
+                     temp = rttList[i];    //swapping entire struct
+                     rttList[i] = rttList[j];
+                     rttList[j] = temp;
+               }
+          }
+     }
+     return;
+}
+
+double calculateRtt(char* ipAddress)
+{
+
+    FILE *fp;
+    char rttBuffer[20];
+    char cmd[50] = "/bin/sh ttl.sh ";
+    strcat(cmd, ipAddress);
+     
+    fp = popen(cmd, "r");
+
+    if (fp == NULL) 
+    {
+        cout << "Failed to run command"<< endl;
+        exit(1);
+    }
+
+    /* Read the output a line at a time - output it. */
+    while (fgets(rttBuffer, sizeof(rttBuffer)-1, fp) != NULL) 
+    {
+        cout << "RTT ->  " << rttBuffer;
+    }
+
+    pclose(fp);
+    return atof(rttBuffer);
+}
+
 private:
 char *m_myIp;
 GeoIP *m_gi;
 GeoIP *m_ASgi;
 };
-
-
 
 int main (int argc, char *argv[]) {
 
@@ -327,43 +378,80 @@ int main (int argc, char *argv[]) {
     system("/bin/sh geolitecityupdate.sh");
     system("/bin/sh geoIPASNum.sh");
 
-    if(argc <= 2) 
+    if(argc <= 3)
     {
-    cout<< "You must provide at least Two IP Addresses\n"<< endl;
+        cout<< "You must provide score/rtt(0/1) flag and least Two IP Addresses\n"<< endl;
         exit(1);
     }
-    ipAddress_s_ptr ipAddressList;
-    ipAddressList =  new ipAddress_s[argc];
-        
-    ipAddressList[1].ipAddress = argv[1];
-    char *myIpAddress = argv[1];
-    ipAddressList[1].score = 0;
-    int length = argc;
 
+    char *myIpAddress = argv[2];
     Geo objGeo = Geo(myIpAddress);
     objGeo.initialize();
 
-    for (int i = 2,  j = 2; i < argc; i ++)
+    // Calculate best peer based on Geographic location
+    if (!strcmp(argv[1],"0"))
     {
-        char *peerIpAddress = argv[i];
-        double peerScore = objGeo.calculateScore(peerIpAddress);
-        if (peerScore >=0)
+        ipAddress_s_ptr ipAddressList;
+        ipAddressList =  new ipAddress_s[argc - 1];
+        ipAddressList[1].ipAddress = argv[2];
+        ipAddressList[1].score = 0;
+        int length = argc -1;
+        for (int i = 3, j = 2; i < argc; i ++)
         {
-            ipAddressList[j].score = peerScore;
-            ipAddressList[j].ipAddress = argv[i];
-            j++;
-         }
-         else
-         {
-            length = length - 1;
-         }
-    }
+            char *peerIpAddress = argv[i];
+            double peerScore = objGeo.calculateScore(peerIpAddress);
+            if (peerScore >0)
+            {
+                ipAddressList[j].score = peerScore;
+                ipAddressList[j].ipAddress = argv[i];
+                j++;
+            }
+            else
+            {
+                length = length - 1;
+            }
+        }
 
-    cout<<"================================================================================"<<endl;
-    objGeo.sortIP(ipAddressList, length);
-    for (int i = 1; i < length; i ++)
+        cout<<"================================================================================"<<endl;
+        cout<<"Best peer based on score"<<endl;
+        objGeo.sortIP(ipAddressList, length);
+        for (int i = 1; i < length; i ++)
+        {
+            cout<<"Peer :"<< ipAddressList[i].ipAddress <<" -> Score :"<< ipAddressList[i].score << endl;
+        }
+    }
+    // calculate best peer based on RTT
+    else if (!strcmp(argv[1],"1"))
     {
-        cout<<"Peer :"<< ipAddressList[i].ipAddress <<" -> Score :"<< ipAddressList[i].score << endl;
+        rtt_s_ptr rttList;
+        rttList =  new rtt_s[argc - 1];
+        rttList[1].ipAddress = argv[2];
+        rttList[1].rtt = 0;
+        int rttlength = argc -1;
+        for (int i = 3, k = 2; i < argc; i ++)
+        {
+            char *peerIpAddress = argv[i];
+            double rtt = objGeo.calculateRtt(peerIpAddress);
+            if (rtt >0)
+            {
+                rttList[k].rtt = rtt;
+                rttList[k].ipAddress = argv[i];
+                k++;
+            }
+            else
+            {
+                rttlength = rttlength - 1;
+            }
+        }
+
+       cout<<"================================================================================"<<endl;
+        cout<<"Best peer based on rtt"<<endl;
+        objGeo.sortRTT(rttList, rttlength);
+        for (int i = 1; i < rttlength; i ++)
+        {
+            cout<<"Peer :"<< rttList[i].ipAddress <<" -> RTT :"<< rttList[i].rtt << endl;
+        }
+
     }
 }
 
