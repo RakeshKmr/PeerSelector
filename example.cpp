@@ -3,10 +3,16 @@
 #include <stdlib.h>
 #include <iostream>
 using namespace std;
+#include <pthread.h>
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include <string.h>
 #include <vector>
+#include <mysql++.h>
+#define DB "peerselector" //database name
+#define HOST "localhost" // so, where's your mysql server?
+#define USERNAME "root" // a user granted access to the above database?
+#define PASSWORD "CareNet2011" // enter the password for the above user. If there's no password, leave it as it is...
 
 //longitude/latitude constants
 const double NAUTICALMILEPERLATITUDE = 60.00721;
@@ -28,8 +34,84 @@ struct rtt_s
     double rtt;
 };
 
+struct thread_argument_s{
+    char *criteria; 
+    char *hash;
+};
+
+struct temp_data{
+    string *urgentlist;
+    int length;
+};
+
 typedef ipAddress_s* ipAddress_s_ptr;
 typedef rtt_s* rtt_s_ptr;
+typedef thread_argument_s* thread_argument_ptr;
+
+void *getIpAddressForUrgentViews(void *arg)
+{
+    struct thread_argument_s *my_data;
+    my_data = (struct thread_argument_s *) arg;
+    struct temp_data *t = new temp_data;
+    t->urgentlist = new string[50];
+    char *criteria; 
+    char *hash; 
+    criteria = my_data->criteria;
+    hash = my_data->hash;
+
+    mysqlpp::Connection conn(false);
+    mysqlpp::Query query = conn.query(); // get an object from Querry class
+    if (conn.connect("", HOST, USERNAME, PASSWORD)) 
+    {
+        if(!conn.select_db(DB))
+        {
+            conn.create_db(DB); // if no database, then create it first.
+            conn.select_db(DB); // select database;
+        }
+
+        if (!strcmp(criteria,"0"))
+        {
+            query << "SELECT ipaddr FROM asn_table WHERE infohash = \"" << hash << "\" ORDER BY score";
+            if (mysqlpp::StoreQueryResult res = query.store()) 
+            {
+			    mysqlpp::StoreQueryResult::const_iterator it;
+			    int i = 0;
+			    for (it = res.begin(); it != res.end(); ++it,++i)
+                {
+				    mysqlpp::Row row = *it;
+				    t->urgentlist[i] = const_cast<char *>(row["ipaddr"].c_str());
+			    }
+
+                t->length = i;
+            }
+            else
+                cerr << "Failed to get item list: " << query.error() << endl;
+		}
+        else if (!strcmp(criteria,"1"))
+        {
+            query << "SELECT ipaddr FROM rtt_table WHERE infohash = \"" << hash << "\" ORDER BY rtt";
+            if (mysqlpp::StoreQueryResult res = query.store()) 
+            {
+			    mysqlpp::StoreQueryResult::const_iterator it;
+			    int i = 0;
+			    for (it = res.begin(); it != res.end(); ++it,++i)
+                {
+				    mysqlpp::Row row = *it;
+				    t->urgentlist[i] = const_cast<char *>(row["ipaddr"].c_str());
+			    }
+
+                t->length = i;
+            }
+            else
+                cerr << "Failed to get item list: " << query.error() << endl;
+		}
+		else 
+        {
+			cerr << "Failed to get item list: " << query.error() << endl;
+		}
+    	return (void *)t;
+    }
+}
 
 class Geo
 {
@@ -69,14 +151,18 @@ double calculateDistance(double peerLatitude, double peerLongitude, double myLat
 
 void getRecords(char* ipAddress, string &continent, string & country, string &city)
 {
-    try
-    {
+     try
+     {
 	    GeoIPRecord  *gir = GeoIP_record_by_addr(m_gi, ipAddress);
+	    string temp;
         if (gir)
         {
-            continent = gir->continent_code;
-            country = gir->country_name;
-            city = gir->city;
+            if (gir->continent_code)
+                continent = gir->continent_code;
+            if (gir->country_name)
+                country = gir->country_name;
+            if (gir->city)
+                city = gir->city;
             /*cout << "========================================================================="<<endl;
             cout << "Ip Address ->" <<ipAddress<<endl;
             cout << "Continent ->"<<continent<<endl;
@@ -88,8 +174,8 @@ void getRecords(char* ipAddress, string &continent, string & country, string &ci
 
     }
     catch(...)
-    {
-    }
+   {
+   }
 }
 
 bool isInSameCity(char* peerIp)
@@ -366,6 +452,175 @@ double calculateRtt(char* ipAddress)
     return atof(rttBuffer);
 }
 
+void getIpAddress(string list[], char *hash, int *length)
+{
+    mysqlpp::Connection conn(false);
+    mysqlpp::Query query = conn.query(); // get an object from Querry class
+    if (conn.connect("", HOST, USERNAME, PASSWORD)) 
+    {
+        if(!conn.select_db(DB))
+        {
+            conn.create_db(DB); // if no database, then create it first.
+            conn.select_db(DB); // select database;
+        }
+
+        query << "SELECT ipaddr FROM infohash_ipaddr WHERE infohash = \"" << hash << "\"";
+        if (mysqlpp::StoreQueryResult res = query.store()) {
+			cout << "We have:" << endl;
+			mysqlpp::StoreQueryResult::const_iterator it;
+			int i = 0;
+			for (it = res.begin(); it != res.end(); ++it,++i) {
+				mysqlpp::Row row = *it;
+				cout << '\t' << row["ipaddr"] << endl;
+                list[i] = const_cast<char *>(row["ipaddr"].c_str());
+                //strcpy(list[i],const_cast<char *>(row["ipaddr"].c_str()));
+			}
+            *length = i;
+		}
+		else {
+			cerr << "Failed to get item list: " << query.error() << endl;
+		}
+    }
+}
+
+void storePeerInAsnTable(ipAddress_s ipAddressList[], int length, char *hash)
+{
+    mysqlpp::Connection conn(false);
+    mysqlpp::Query query = conn.query(); // get an object from Querry class
+    if (conn.connect("", HOST, USERNAME, PASSWORD)) 
+    {
+        if(!conn.select_db(DB))
+        {
+            conn.create_db(DB); // if no database, then create it first.
+            conn.select_db(DB); // select database;
+        }
+        
+        mysqlpp::Query ifTableExist = conn.query("describe asn_table");
+        
+        if (!ifTableExist.execute())
+        {
+            query << "CREATE TABLE asn_table (ipaddr VARCHAR(36) not null , score DOUBLE not null , infohash VARCHAR(36) not null, PRIMARY KEY (ipaddr, infohash), UNIQUE (ipaddr, infohash))";
+            if(query.execute()) // execute it!
+            {
+                for (int i = 0; i < length; i++)
+                {
+                    query.reset();
+                    query << "INSERT INTO asn_table(ipaddr, score, infohash) VALUES (\"" << ipAddressList[i].ipAddress << "\", \"" << ipAddressList[i].score << "\" , \"" << hash << "\")";
+                    query.execute();
+                }
+            }
+            else
+            {
+                cout <<"Error : Table creation Failed"<<endl;
+            }
+        }
+        else
+        {
+            mysqlpp::Connection conn(false);
+            mysqlpp::Query query = conn.query(); // get an object from Querry class
+            if (conn.connect("", HOST, USERNAME, PASSWORD)) 
+            {
+                if(!conn.select_db(DB))
+                {
+                    conn.create_db(DB); // if no database, then create it first.
+                    conn.select_db(DB); // select database;
+                }
+                //Table is already present
+                for (int i = 0; i < length; i++)
+                {
+                    query.reset();
+                    query << "INSERT INTO asn_table(ipaddr, score, infohash) VALUES (\""<<ipAddressList[i].ipAddress<<"\",\""<<ipAddressList[i].score<<"\",\""<<hash<<"\")";
+                    if (!query.execute())
+                    {
+                        query.reset();
+                        query << "UPDATE asn_table SET score = (\""<<ipAddressList[i].score<<"\") where ipaddr = (\""<<ipAddressList[i].ipAddress<<"\") AND infohash = (\""<<hash<<"\")";
+                        query.execute();
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        cout<<"Error : Not able to Establish connection to database"<<endl;
+    }
+}
+
+void storePeerInRttTable(rtt_s ipAddressList[], int length, char *hash)
+{
+    mysqlpp::Connection conn(false);
+    mysqlpp::Query query = conn.query(); // get an object from Querry class
+    if (conn.connect("", HOST, USERNAME, PASSWORD)) 
+    {
+        if(!conn.select_db(DB))
+        {
+            conn.create_db(DB); // if no database, then create it first.
+            conn.select_db(DB); // select database;
+        }
+        
+        mysqlpp::Query ifTableExist = conn.query("describe rtt_table");
+        
+        if (!ifTableExist.execute())
+        {
+            query << "CREATE TABLE rtt_table (ipaddr VARCHAR(36) not null , rtt DOUBLE not null , infohash VARCHAR(36) not null, PRIMARY KEY (ipaddr, infohash), UNIQUE (ipaddr, infohash))";
+            if(query.execute()) // execute it!
+            {
+                for (int i = 0; i < length; i++)
+                {
+                    query.reset();
+                    query << "INSERT INTO rtt_table(ipaddr, rtt, infohash) VALUES (\"" << ipAddressList[i].ipAddress << "\", \"" << ipAddressList[i].rtt << "\" , \"" << hash << "\")";
+                    query.execute();
+                }
+            }
+            else
+            {
+                cout <<"Error : Table creation Failed"<<endl;
+            }
+        }
+        else
+        {
+            mysqlpp::Connection conn(false);
+            mysqlpp::Query query = conn.query(); // get an object from Querry class
+            if (conn.connect("", HOST, USERNAME, PASSWORD)) 
+            {
+                if(!conn.select_db(DB))
+                {
+                    conn.create_db(DB); // if no database, then create it first.
+                    conn.select_db(DB); // select database;
+                }
+                //Table is already present
+                for (int i = 0; i < length; i++)
+                {
+                    query.reset();
+                    query << "INSERT INTO rtt_table(ipaddr, rtt, infohash) VALUES (\""<<ipAddressList[i].ipAddress<<"\",\""<<ipAddressList[i].rtt<<"\",\""<<hash<<"\")";
+                    if (!query.execute())
+                    {
+                        query.reset();
+                        query << "SELECT rtt FROM rtt_table WHERE ipaddr = \"" << ipAddressList[i].ipAddress << "\" AND infohash = \"" << hash << "\"";
+                        if (mysqlpp::StoreQueryResult res = query.store()) 
+                        {
+                            if (abs(ipAddressList[i].rtt - res[0][0]) > 1)
+                            {
+                                query.reset();
+                                query << "UPDATE rtt_table SET rtt = (\""<<ipAddressList[i].rtt<<"\") where ipaddr = (\""<<ipAddressList[i].ipAddress<<"\") AND infohash = (\""<<hash<<"\")";
+                            }
+			                
+		                }
+		                else 
+		                {
+			                cerr << "Failed to get item list: " << query.error() << endl;
+		                }
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        cout<<"Error : Not able to Establish connection to database"<<endl;
+    }
+}
+
 private:
 char *m_myIp;
 GeoIP *m_gi;
@@ -378,32 +633,58 @@ int main (int argc, char *argv[]) {
     system("/bin/sh geolitecityupdate.sh");
     system("/bin/sh geoIPASNum.sh");
 
-    if(argc <= 3)
+    if(argc <= 2)
     {
-        cout<< "You must provide score/rtt(0/1) flag and least Two IP Addresses\n"<< endl;
+        cout<< "You must provide score/rtt(0/1) flag and at least two IP Addresses\n"<< endl;
         exit(1);
     }
-
-    char *myIpAddress = argv[2];
+    string list[50];
+    int listLength;
+    string *urgentList;
+    int urgentListLength;
+    char *myIpAddress = argv[3];
     Geo objGeo = Geo(myIpAddress);
+
+    pthread_t pth;	// this is our thread identifier
+    struct thread_argument_s thread_arg;
+    thread_arg.criteria = argv[1];
+    thread_arg.hash = argv[2];
+    
+	/* Create worker thread */
+	pthread_create(&pth,NULL,getIpAddressForUrgentViews,(void *) &thread_arg);
+
+    void *temp;
+    struct temp_data *tempReturn;
+
+   	/* wait for our thread to finish before continuing */
+    pthread_join(pth,(void **) &temp);
+    tempReturn = (struct temp_data *) temp;
+    urgentList = tempReturn->urgentlist;
+    urgentListLength = tempReturn->length;
+
+    for (int i = 0; i < urgentListLength; i++)
+    {
+        cout<<"Urgent List :"<< urgentList[i] << endl;
+    }
+    objGeo.getIpAddress(list, argv[2], &listLength);
     objGeo.initialize();
 
     // Calculate best peer based on Geographic location
     if (!strcmp(argv[1],"0"))
     {
         ipAddress_s_ptr ipAddressList;
-        ipAddressList =  new ipAddress_s[argc - 1];
-        ipAddressList[1].ipAddress = argv[2];
-        ipAddressList[1].score = 0;
-        int length = argc -1;
-        for (int i = 3, j = 2; i < argc; i ++)
+        ipAddressList =  new ipAddress_s[listLength];
+        ipAddressList[0].ipAddress = argv[3];
+        ipAddressList[0].score = 0;
+        int length = listLength + 1;
+        for (int i = 0, j = 1; i < listLength; i ++)
         {
-            char *peerIpAddress = argv[i];
+            char *peerIpAddress = const_cast<char *>(list[i].c_str());
             double peerScore = objGeo.calculateScore(peerIpAddress);
-            if (peerScore >0)
+            if (peerScore > 0)
             {
                 ipAddressList[j].score = peerScore;
-                ipAddressList[j].ipAddress = argv[i];
+                ipAddressList[j].ipAddress = const_cast<char *>(list[i].c_str());
                 j++;
             }
             else
@@ -415,27 +696,28 @@ int main (int argc, char *argv[]) {
         cout<<"================================================================================"<<endl;
         cout<<"Best peer based on score"<<endl;
         objGeo.sortIP(ipAddressList, length);
-        for (int i = 1; i < length; i ++)
+        for (int i = 1; i < length; i++)
         {
             cout<<"Peer :"<< ipAddressList[i].ipAddress <<" -> Score :"<< ipAddressList[i].score << endl;
         }
+        objGeo.storePeerInAsnTable(ipAddressList, length, argv [2]);
     }
     // calculate best peer based on RTT
     else if (!strcmp(argv[1],"1"))
     {
         rtt_s_ptr rttList;
-        rttList =  new rtt_s[argc - 1];
-        rttList[1].ipAddress = argv[2];
-        rttList[1].rtt = 0;
-        int rttlength = argc -1;
-        for (int i = 3, k = 2; i < argc; i ++)
+        rttList =  new rtt_s[listLength];
+        rttList[0].ipAddress = argv[3];
+        rttList[0].rtt = 0;
+        int rttlength = listLength + 1;
+        for (int i = 0, k = 1; i < listLength; i ++)
         {
-            char *peerIpAddress = argv[i];
+            char *peerIpAddress = const_cast<char *>(list[i].c_str());
             double rtt = objGeo.calculateRtt(peerIpAddress);
-            if (rtt >0)
+            if (rtt > 0)
             {
                 rttList[k].rtt = rtt;
-                rttList[k].ipAddress = argv[i];
+                rttList[k].ipAddress = const_cast<char *>(list[i].c_str());
                 k++;
             }
             else
@@ -444,14 +726,14 @@ int main (int argc, char *argv[]) {
             }
         }
 
-       cout<<"================================================================================"<<endl;
+        cout<<"================================================================================"<<endl;
         cout<<"Best peer based on rtt"<<endl;
         objGeo.sortRTT(rttList, rttlength);
         for (int i = 1; i < rttlength; i ++)
         {
             cout<<"Peer :"<< rttList[i].ipAddress <<" -> RTT :"<< rttList[i].rtt << endl;
         }
-
+        objGeo.storePeerInRttTable(rttList, rttlength, argv [2]);
     }
 }
 

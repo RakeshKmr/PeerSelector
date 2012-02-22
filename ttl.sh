@@ -5,9 +5,9 @@
 
 #IP_ADDRESS=192.16.126.65 
 
-TTL_STRING="$(ping $1 -c 10 | grep 'rtt' | awk '{ print $4}')"
+TTL_STRING="$(ping $1 -i .2 -c 10 | grep 'rtt' | awk '{ print $4}')"
 
-TTL=$(echo $TTL_STRING | cut -d '/' -f1)
+TTL=$(echo $TTL_STRING | cut -d '/' -f2)
 
 echo $TTL
 
