@@ -51,10 +51,10 @@ void parser()
 int main(int argc, char *argv[])
 {
     // Rakesh - uncomment it later
-    //char cmd[50] = "/bin/sh ./dht.sh ";
-    //strcat(cmd, argv[1]);
-    //strcat(cmd, " > input.txt");
-    //system(cmd);
+    char cmd[50] = "/bin/sh ./dht.sh ";
+    strcat(cmd, argv[1]);
+    strcat(cmd, " > input.txt");
+    system(cmd);
     system("/bin/sh parser.sh");
     parser();
     string hash = argv[1];

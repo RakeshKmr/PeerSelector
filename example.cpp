@@ -431,25 +431,50 @@ double calculateRtt(char* ipAddress)
 
     FILE *fp;
     char rttBuffer[20];
-    char cmd[50] = "/bin/sh ttl.sh ";
-    strcat(cmd, ipAddress);
-     
-    fp = popen(cmd, "r");
-
-    if (fp == NULL) 
+    double SampleRTT = 0;
+    double EstimatedRTT = 0;
+    double Deviation = 0;
+    double RTO = -1;
+    double x = .1;
+    for (int i = 0; i < 10; i++)
     {
-        cout << "Failed to run command"<< endl;
-        exit(1);
-    }
+        char cmd[50] = "/bin/sh rtt.sh ";
+        strcat(cmd, ipAddress);
+         
+        fp = popen(cmd, "r");
 
-    /* Read the output a line at a time - output it. */
-    while (fgets(rttBuffer, sizeof(rttBuffer)-1, fp) != NULL) 
-    {
-        cout << "RTT ->  " << rttBuffer;
-    }
+        if (fp == NULL) 
+        {
+            cout << "Failed to run command"<< endl;
+            exit(1);
+        }
 
-    pclose(fp);
-    return atof(rttBuffer);
+        /* Read the output a line at a time - output it. */
+        while (fgets(rttBuffer, sizeof(rttBuffer)-1, fp) != NULL) 
+        {
+            cout << "RTT ->  " << rttBuffer;
+        }
+        SampleRTT = atof(rttBuffer);
+        if (RTO == -1) 
+        {
+            EstimatedRTT = SampleRTT;
+            Deviation = SampleRTT / 2.0;
+            RTO = EstimatedRTT + 4 * Deviation;
+        } 
+        else 
+        {
+            // since the IP address is unreachable 2nd time, so there is no point trying again 
+            if (EstimatedRTT == 0)
+                break;
+            Deviation = (1 - x) * Deviation + x * abs(EstimatedRTT - SampleRTT);
+		    EstimatedRTT = (1 - x) * EstimatedRTT + x * SampleRTT;
+            // This time out is for future use, right now I am relying on ping protocol for timeout
+            RTO = EstimatedRTT + 4 * Deviation;
+        }
+
+        pclose(fp);
+    }
+    return EstimatedRTT;
 }
 
 void getIpAddress(string list[], char *hash, int *length)
